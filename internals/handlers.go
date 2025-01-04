@@ -18,12 +18,15 @@ func (servers *Servers) ReverseProxy(w http.ResponseWriter, r *http.Request) {
 	proxyRequest.URL = new(url.URL)
 	*proxyRequest.URL = *r.URL
 
-	targetURL, err := servers.roundRobin()
+	targetServer, err := servers.roundRobin()
 	if err != nil {
-		http.Error(w, "all servers are down", http.StatusInternalServerError)
+		http.Error(w, "No servers available", http.StatusInternalServerError)
+		return
 	}
 
-	parsedUrl, err := url.Parse(targetURL.Url)
+	targetURL := fmt.Sprintf("%s://%s/%s", targetServer.Scheme, targetServer.Host, targetServer.Path)
+
+	parsedUrl, err := url.Parse(targetURL)
 	if err != nil {
 		log.Println("error parsing URL: ", err)
 	}
@@ -32,14 +35,17 @@ func (servers *Servers) ReverseProxy(w http.ResponseWriter, r *http.Request) {
 	proxyRequest.URL.Scheme = parsedUrl.Scheme
 	proxyRequest.URL.Host = parsedUrl.Host
 	proxyRequest.RequestURI = ""
+	proxyRequest.Header.Set("X-Forwarded-For", r.RemoteAddr)
 
 	res, err := client.Do(proxyRequest)
 	if err != nil {
-		log.Println("error sending request to server: ", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, "failed to connect to server", http.StatusBadGateway)
+		log.Printf("error sending request to server (%s): %v", targetURL, err)
 		return
-
 	}
+
+	defer res.Body.Close()
+
 	for key, values := range res.Header {
 		for _, v := range values {
 			w.Header().Add(key, v)
@@ -47,12 +53,11 @@ func (servers *Servers) ReverseProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(res.StatusCode)
-	_, err = io.Copy(w, res.Body)
-	if err != nil {
-		log.Println(w, "error wrting response", err)
+	if _, err := io.Copy(w, res.Body); err != nil {
+		log.Println("error writing response:", err)
 	}
-
 }
+
 func (s *Servers) HealthCheck() {
 
 	ticker := time.NewTicker(10 * time.Second)
@@ -77,27 +82,28 @@ func (s *Servers) doChecks() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for i := range s.serverList {
+	for i := range s.Servers {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			endpoint := fmt.Sprint(s.serverList[index].Url, "/test")
+			targetServer := s.Servers[index]
+			targetURL := fmt.Sprintf("%s://%s/%s", targetServer.Scheme, targetServer.Host, targetServer.Path)
 
-			resp, err := client.Get(endpoint)
+			resp, err := client.Get(targetURL)
 			if err != nil {
-				s.serverList[index].healthy = false
-				log.Println("server is unresponsive: ", s.serverList[index].Url)
+				s.Servers[index].Healthy = false
+				log.Println("server is unresponsive: ", targetURL)
 				return
 			}
 
 			defer resp.Body.Close()
 
 			if resp.StatusCode == http.StatusOK {
-				s.serverList[index].healthy = true
-				log.Printf("server %s is healthy", s.serverList[index].Url)
+				s.Servers[index].Healthy = true
+				log.Printf("server %s is healthy", targetURL)
 			} else {
-				s.serverList[index].healthy = false
-				log.Printf("server %s returned status code %d", s.serverList[index].Url, resp.StatusCode)
+				s.Servers[index].Healthy = false
+				log.Printf("server %s returned status code %d", targetURL, resp.StatusCode)
 			}
 		}(i)
 
@@ -110,16 +116,19 @@ func (s *Servers) roundRobin() (server, error) {
 	defer s.mu.Unlock()
 	unhealthy := 0
 
+	if len(s.Servers) == 0 {
+		err := errors.New("no servers available")
+		return server{}, err
+	}
 	for {
-		if unhealthy == len(s.serverList) {
-			log.Println("All servers are down")
+		if unhealthy == len(s.Servers) {
 			err := errors.New("all servers are down")
 			return server{}, err
 		}
 
-		s.index = (s.index + 1) % len(s.serverList)
-		if s.serverList[s.index].healthy {
-			return s.serverList[s.index], nil
+		s.index = (s.index + 1) % len(s.Servers)
+		if s.Servers[s.index].Healthy {
+			return s.Servers[s.index], nil
 		} else {
 			unhealthy++
 			continue

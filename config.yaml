@@ -1,0 +1,12 @@
+servers:
+  - Scheme: http
+    Host: localhost:3000
+    Port: 3000
+    Path: test
+    Healthy: true
+  
+  - Scheme: http
+    Host: localhost:8082
+    Port: 8082
+    Path: test
+    Healthy: true
