@@ -7,8 +7,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"sync"
-	"time"
 )
 
 func (servers *Servers) ReverseProxy(w http.ResponseWriter, r *http.Request) {
@@ -20,7 +18,8 @@ func (servers *Servers) ReverseProxy(w http.ResponseWriter, r *http.Request) {
 
 	targetServer, err := servers.roundRobin()
 	if err != nil {
-		http.Error(w, "No servers available", http.StatusInternalServerError)
+		log.Println(err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
@@ -56,59 +55,6 @@ func (servers *Servers) ReverseProxy(w http.ResponseWriter, r *http.Request) {
 	if _, err := io.Copy(w, res.Body); err != nil {
 		log.Println("error writing response:", err)
 	}
-}
-
-func (s *Servers) HealthCheck() {
-
-	ticker := time.NewTicker(10 * time.Second)
-
-	go func() {
-		for range ticker.C {
-
-			s.doChecks()
-
-		}
-	}()
-}
-
-func (s *Servers) doChecks() {
-
-	var wg sync.WaitGroup
-
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for i := range s.Servers {
-		wg.Add(1)
-		go func(index int) {
-			defer wg.Done()
-			targetServer := s.Servers[index]
-			targetURL := fmt.Sprintf("%s://%s/%s", targetServer.Scheme, targetServer.Host, targetServer.Path)
-
-			resp, err := client.Get(targetURL)
-			if err != nil {
-				s.Servers[index].Healthy = false
-				log.Println("server is unresponsive: ", targetURL)
-				return
-			}
-
-			defer resp.Body.Close()
-
-			if resp.StatusCode == http.StatusOK {
-				s.Servers[index].Healthy = true
-				log.Printf("server %s is healthy", targetURL)
-			} else {
-				s.Servers[index].Healthy = false
-				log.Printf("server %s returned status code %d", targetURL, resp.StatusCode)
-			}
-		}(i)
-
-	}
-	wg.Wait()
 }
 
 func (s *Servers) roundRobin() (server, error) {

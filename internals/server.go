@@ -24,20 +24,8 @@ type Servers struct {
 func (servers *Servers) SetIndex(index int) {
 	servers.index = index
 }
-func (servers *Servers) GetIndex() int {
-	return servers.index
-}
-func (servers *Servers) GetServerList() []server {
-	return servers.Servers
-}
-func (servers *Servers) SetServerList(serverList []server) {
-	servers.Servers = serverList
-}
 func (servers *Servers) SetMu(mu *sync.Mutex) {
 	servers.mu = mu
-}
-func (servers *Servers) GetMu() *sync.Mutex {
-	return servers.mu
 }
 
 var client = &http.Client{
